@@ -5,7 +5,12 @@
 ################################################################################
 
 UBOOT_VERSION = $(call qstrip,$(BR2_TARGET_UBOOT_VERSION))
-UBOOT_BOARD_NAME = $(call qstrip,$(BR2_TARGET_UBOOT_BOARDNAME))
+
+ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY),y)
+UBOOT_BOARD_NAMES = $(call qstrip,$(BR2_TARGET_UBOOT_BOARDNAME))
+else ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG)$(BR2_TARGET_UBOOT_BUILD_SYSTEM_MULTI_KCONFIG),y)
+UBOOT_BOARD_NAMES = $(call qstrip,$(BR2_TARGET_UBOOT_BOARD_DEFCONFIG))
+endif
 
 UBOOT_LICENSE = GPL-2.0+
 ifeq ($(BR2_TARGET_UBOOT_LATEST_VERSION),y)
@@ -147,6 +152,14 @@ else
 UBOOT_ARCH = $(KERNEL_ARCH)
 endif
 
+# UBOOT_BOARD_NAMES defined in boot/uboot/uboot.mk
+ifeq ($(words $(UBOOT_BOARD_NAMES)),1)
+HOST_UBOOT_TOOLS_ENV_BIN = uboot-env.bin
+else
+HOST_UBOOT_TOOLS_ENV_BIN = uboot-env-$(UBOOT_BOARD_NAME).bin
+endif
+
+
 UBOOT_MAKE_OPTS += \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
 	ARCH=$(UBOOT_ARCH) \
@@ -196,6 +209,19 @@ endif
 
 ifeq ($(BR2_TARGET_UBOOT_NEEDS_LZOP),y)
 UBOOT_DEPENDENCIES += host-lzop
+endif
+
+# Support passing multiple board names
+ifeq ($(words $(UBOOT_BOARD_NAMES)),1)
+UBOOT_BUILD_DIRECTORY = $(@D)
+else
+ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG),y)
+$(error The kconfig build system does not support multiple defconfigs. Switch to multi-kconfig instead.)
+endif
+# Note: in case of multi-kconfig, we still use variable 'UBOOT_BOARD_NAME' for
+# the defconfig name, even though it is not strictly a board name anymore.
+UBOOT_BUILD_DIRECTORY = $(UBOOT_DIR)/build/$(UBOOT_BOARD_NAME)
+UBOOT_MAKE_OPTS += O=$(UBOOT_BUILD_DIRECTORY)
 endif
 
 # prior to u-boot 2013.10 the license info was in COPYING. Copy it so
@@ -269,10 +295,56 @@ UBOOT_POST_PATCH_HOOKS += UBOOT_FIXUP_LIBFDT_INCLUDE
 
 ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY),y)
 define UBOOT_CONFIGURE_CMDS
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	@$(call MESSAGE,Configuring for $(UBOOT_BOARD_NAME))
 	$(TARGET_CONFIGURE_OPTS) \
 		$(UBOOT_MAKE) -C $(@D) $(UBOOT_MAKE_OPTS) \
 		$(UBOOT_BOARD_NAME)_config
+)
 endef
+else ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_MULTI_KCONFIG),y)
+
+define UBOOT_CONFIGURE_CMDS
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	@$(call MESSAGE,Configuring for $(UBOOT_BOARD_NAME))
+	$(UBOOT_MAKE_ENV) \
+		$(UBOOT_MAKE) -C $(@D) $(UBOOT_MAKE_OPTS) \
+		$(UBOOT_BOARD_NAME)_defconfig
+)
+endef
+
+define UBOOT_MENUCONFIG_CMDS
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	@printf "Invoke menuconfig for $(UBOOT_BOARD_NAME)? (y|N) "
+	$(Q)read invoke; \
+	if [ "$$invoke" = "y" ]; then \
+		$(UBOOT_MAKE_ENV) \
+			$(UBOOT_MAKE) -C $(UBOOT_DIR) $(UBOOT_MAKE_OPTS) \
+			menuconfig ; \
+	fi
+)
+endef
+
+define UBOOT_SAVEDEFCONFIG_CMDS
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	@$(call MESSAGE,Saving defconfig for $(UBOOT_BOARD_NAME))
+	$(UBOOT_MAKE_ENV) \
+		$(UBOOT_MAKE) -C $(UBOOT_DIR) $(UBOOT_MAKE_OPTS) \
+		savedefconfig
+)
+endef
+
+define UBOOT_HELP_CMDS
+	@echo '  uboot-menuconfig       - Run U-Boot menuconfig'
+	@echo '  uboot-savedefconfig    - Run U-Boot savedefconfig'
+endef
+
+uboot-menuconfig: uboot-configure
+	$(UBOOT_MENUCONFIG_CMDS)
+
+uboot-savedefconfig:
+	$(UBOOT_SAVEDEFCONFIG_CMDS)
+
 else ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG),y)
 ifeq ($(BR2_TARGET_UBOOT_USE_DEFCONFIG),y)
 UBOOT_KCONFIG_DEFCONFIG = $(call qstrip,$(BR2_TARGET_UBOOT_BOARD_DEFCONFIG))_defconfig
@@ -303,38 +375,46 @@ endif # BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY
 UBOOT_CUSTOM_DTS_PATH = $(call qstrip,$(BR2_TARGET_UBOOT_CUSTOM_DTS_PATH))
 
 define UBOOT_BUILD_CMDS
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	@$(call MESSAGE,Building for $(UBOOT_BOARD_NAME))
 	$(if $(UBOOT_CUSTOM_DTS_PATH),
-		cp -f $(UBOOT_CUSTOM_DTS_PATH) $(@D)/arch/$(UBOOT_ARCH)/dts/
+		cp -f $(UBOOT_CUSTOM_DTS_PATH) $(UBOOT_BUILD_DIRECTORY)/arch/$(UBOOT_ARCH)/dts/
 	)
 	$(TARGET_CONFIGURE_OPTS) \
 		$(UBOOT_MAKE) -C $(@D) $(UBOOT_MAKE_OPTS) \
 		$(UBOOT_MAKE_TARGET)
 	$(if $(BR2_TARGET_UBOOT_FORMAT_SD),
-		$(@D)/tools/mxsboot sd $(@D)/u-boot.sb $(@D)/u-boot.sd)
+		$(UBOOT_BUILD_DIRECTORY)/tools/mxsboot sd $(UBOOT_BUILD_DIRECTORY)/u-boot.sb $(UBOOT_BUILD_DIRECTORY)/u-boot.sd)
 	$(if $(BR2_TARGET_UBOOT_FORMAT_NAND),
-		$(@D)/tools/mxsboot \
+		$(UBOOT_BUILD_DIRECTORY)/tools/mxsboot \
 			-w $(BR2_TARGET_UBOOT_FORMAT_NAND_PAGE_SIZE) \
 			-o $(BR2_TARGET_UBOOT_FORMAT_NAND_OOB_SIZE) \
 			-e $(BR2_TARGET_UBOOT_FORMAT_NAND_ERASE_SIZE) \
-			nand $(@D)/u-boot.sb $(@D)/u-boot.nand)
+			nand $(UBOOT_BUILD_DIRECTORY)/u-boot.sb $(UBOOT_BUILD_DIRECTORY)/u-boot.nand)
+)
 endef
 
 define UBOOT_BUILD_OMAP_IFT
-	$(HOST_DIR)/bin/gpsign -f $(@D)/u-boot.bin \
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	$(HOST_DIR)/bin/gpsign -f $(UBOOT_BUILD_DIRECTORY)/u-boot.bin \
 		-c $(call qstrip,$(BR2_TARGET_UBOOT_OMAP_IFT_CONFIG))
+)
 endef
 
 define UBOOT_INSTALL_IMAGES_CMDS
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	@$(call MESSAGE,Installing to images directory for $(UBOOT_BOARD_NAME))
 	$(foreach f,$(UBOOT_BINS), \
-			cp -dpf $(@D)/$(f) $(BINARIES_DIR)/
+			cp -dpf $(UBOOT_BUILD_DIRECTORY)/$(f) $(BINARIES_DIR)/$(UBOOT_BOARD_NAME)-$(f)
 	)
 	$(if $(BR2_TARGET_UBOOT_FORMAT_NAND),
-		cp -dpf $(@D)/u-boot.sb $(BINARIES_DIR))
+		cp -dpf $(UBOOT_BUILD_DIRECTORY)/u-boot.sb $(BINARIES_DIR)/$(UBOOT_BOARD_NAME)-u-boot.sb)
 	$(if $(BR2_TARGET_UBOOT_SPL),
 		$(foreach f,$(call qstrip,$(BR2_TARGET_UBOOT_SPL_NAME)), \
-			cp -dpf $(@D)/$(f) $(BINARIES_DIR)/
+			cp -dpf $(UBOOT_BUILD_DIRECTORY)/$(f) $(BINARIES_DIR)/$(UBOOT_BOARD_NAME)-$(shell basename $(f))
 		)
 	)
+)
 endef
 
 ifeq ($(BR2_TARGET_UBOOT_ZYNQMP),y)
@@ -381,7 +461,9 @@ endif
 endif # BR2_TARGET_UBOOT_ZYNQMP
 
 define UBOOT_INSTALL_OMAP_IFT_IMAGE
-	cp -dpf $(@D)/$(UBOOT_BIN_IFT) $(BINARIES_DIR)/
+$(foreach UBOOT_BOARD_NAME,$(UBOOT_BOARD_NAMES),
+	cp -dpf $(UBOOT_BUILD_DIRECTORY)/$(UBOOT_BIN_IFT) $(BINARIES_DIR)/
+)
 endef
 
 ifeq ($(BR2_TARGET_UBOOT_OMAP_IFT),y)
@@ -442,7 +524,7 @@ ifeq ($(BR2_TARGET_UBOOT)$(BR_BUILDING),yy)
 # file options (for kconfig)
 #
 ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY),y)
-ifeq ($(UBOOT_BOARD_NAME),)
+ifeq ($(UBOOT_BOARD_NAMES),)
 $(error No U-Boot board name set. Check your BR2_TARGET_UBOOT_BOARDNAME setting)
 endif # UBOOT_BOARD_NAME
 else ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG),y)
@@ -490,7 +572,7 @@ endif # BR2_TARGET_UBOOT_CUSTOM_GIT || BR2_TARGET_UBOOT_CUSTOM_HG
 
 endif # BR2_TARGET_UBOOT && BR_BUILDING
 
-ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY),y)
+ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY)$(BR2_TARGET_UBOOT_BUILD_SYSTEM_MULTI_KCONFIG),y)
 UBOOT_DEPENDENCIES += \
 	$(BR2_BISON_HOST_DEPENDENCY) \
 	$(BR2_FLEX_HOST_DEPENDENCY)

@@ -23,6 +23,13 @@ config BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY
 	  Select this option if you use an old U-Boot (older than
 	  2015.04), so that we use the old build system.
 
+config BR2_TARGET_UBOOT_BUILD_SYSTEM_MULTI_KCONFIG
+	bool "Kconfig -- multiple defconfigs"
+	help
+	  Select this option if you use a recent U-Boot version (2015.04
+	  or newer), so that we use the Kconfig build system, but want
+	  to build multiple defconfigs at once.
+
 endchoice
 
 if BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY
@@ -33,6 +40,14 @@ config BR2_TARGET_UBOOT_BOARDNAME
 	  This will be suffixed with _config to meet U-Boot standard
 	  naming. See boards.cfg in U-Boot source code for the list of
 	  available configurations.
+
+	  You can specify a space-separated list of configurations here.
+	  In this case, all configurations will be built next to each
+	  other. This requires proper out-of-tree support in the U-boot
+	  sources, and that the output file is named separately for each
+	  board.
+	  Note that this mode has many restrictions: all other settings
+	  in this menu have to be the same for each configuration.
 endif
 
 choice
@@ -103,7 +118,7 @@ config BR2_TARGET_UBOOT_PATCH
 
 	  Most users may leave this empty
 
-if BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG
+if BR2_TARGET_UBOOT_BUILD_SYSTEM_KCONFIG || BR2_TARGET_UBOOT_BUILD_SYSTEM_MULTI_KCONFIG
 choice
 	prompt "U-Boot configuration"
 	default BR2_TARGET_UBOOT_USE_DEFCONFIG
@@ -113,6 +128,7 @@ config BR2_TARGET_UBOOT_USE_DEFCONFIG
 
 config BR2_TARGET_UBOOT_USE_CUSTOM_CONFIG
 	bool "Using a custom board (def)config file"
+	depends on !BR2_TARGET_UBOOT_BUILD_SYSTEM_MULTI_KCONFIG
 
 endchoice
 
